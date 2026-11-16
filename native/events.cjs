@@ -18,6 +18,24 @@ function createEventReceiver(session, self, report, current, {
   memberRetryMs = MEMBER_RETRY_MS, mediaTimeoutMs = MEDIA_TIMEOUT_MS, mediaExists = existsSync,
 } = {}) {
   const cache = new Map();
+  // QQ leaves sendNickName empty on private messages. Nicknames come from the buddy list when it carries them,
+  // otherwise from one profile lookup per user; a failed lookup only means the message goes out without a name.
+  const nicks = new Map();
+  const rememberNick = (uid, nick) => {
+    if (!uid || typeof nick !== 'string' || !nick) return;
+    nicks.set(uid, nick);
+    if (nicks.size > 5000) nicks.delete(nicks.keys().next().value);
+  };
+  async function nickOf(uid) {
+    if (!uid) return '';
+    if (nicks.has(uid)) return nicks.get(uid);
+    try {
+      const result = await session.getProfileService().getCoreAndBaseInfo('nodeStore', [uid]);
+      const core = (result instanceof Map ? result.get(uid) : undefined)?.coreInfo;
+      rememberNick(uid, String(core?.nick || core?.remark || ''));
+    } catch { /* report without a nickname */ }
+    return nicks.get(uid) ?? '';
+  }
   const mediaWaiters = new Map();
   const safeExists = value => { try { return typeof value === 'string' && value.length > 0 && mediaExists(value); } catch { return false; } };
   async function downloadPicture(peer, msgId, element) {
@@ -315,7 +333,8 @@ function createEventReceiver(session, self, report, current, {
     record(input, senderUin);
     const elements = await prepare(input.elements ?? [], { peer: { chatType: input.chatType, peerUid: String(input.peerUid) },
       root: String(input.msgId), depth: 0, budget: { left: FORWARD_LIMIT } }, String(input.msgId));
-    emit({ type: 'message', self, message: { ...input, senderUin, elements } });
+    const nick = input.chatType !== 2 && !input.sendNickName ? await nickOf(input.senderUid) : '';
+    emit({ type: 'message', self, message: { ...input, senderUin, elements, ...(nick ? { sendNickName: nick } : {}) } });
     if (input.chatType === 2) for (const element of elements) {
       const file = element.fileElement;
       if (element.elementType === 3 && file?.fileUuid) notice({ notice_type: 'group_upload', group_id: input.peerUin ?? input.peerUid,
@@ -436,6 +455,7 @@ function createEventReceiver(session, self, report, current, {
         const next = new Map();
         for (const category of args[0] ?? []) for (const buddy of category.buddyList ?? []) {
           remember(buddy.uid, buddy.uin);
+          rememberNick(buddy.uid, buddy.coreInfo?.nick || buddy.nick || buddy.coreInfo?.remark || buddy.remark);
           next.set(buddy.uid, buddy.uin);
         }
         if (friends && !syncing) {
