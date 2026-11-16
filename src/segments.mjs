@@ -1,7 +1,42 @@
+import { readFileSync, statSync } from 'node:fs';
+
 function numeric(value) { return /^\d+$/.test(String(value)) && Number.isSafeInteger(Number(value)); }
 const text = value => typeof value === 'string' && value.length > 0;
 
-export function convertSegment(element, replyId, forward) {
+// A downloaded picture is inlined as base64 so a bot that cannot read this machine's disk (e.g. in a container)
+// still sees it. Larger files keep only the url fallback.
+const INLINE_LIMIT = 5 * 1024 * 1024;
+const defaultIo = { stat: statSync, read: readFileSync };
+function inlinePicture(data, io) {
+  if (!text(data.path)) return;
+  try {
+    const info = io.stat(data.path);
+    if (!info.isFile() || info.size > INLINE_LIMIT) return;
+    data.file = 'base64://' + io.read(data.path).toString('base64');
+    delete data.url;
+  } catch { /* keep the url fallback */ }
+}
+
+// 收到的图片不会自动下载到本地，事件里给出一个可直接下载的地址，
+// 否则跑在别处（如容器里）的机器人框架看不到图片内容。做法与 NapCat 一致：
+// 相对路径补上官方媒体域名；NT 新版地址缺 rkey 时无法下载，退回按 MD5 拼的旧式地址。
+const NT_HOST = 'https://multimedia.nt.qq.com.cn';
+const GCHAT_HOST = 'https://gchat.qpic.cn';
+function imageUrl(value) {
+  const origin = typeof value.originImageUrl === 'string' ? value.originImageUrl : '';
+  if (/^https?:\/\//.test(origin)) return origin;
+  if (origin.startsWith('/') && !origin.startsWith('//')) {
+    const params = new URL(GCHAT_HOST + origin).searchParams;
+    const ntV2 = ['1406', '1407'].includes(params.get('appid') ?? '') && params.get('fileid');
+    if (ntV2 && params.get('rkey')) return NT_HOST + origin;
+    if (!ntV2) return GCHAT_HOST + origin;
+  }
+  const md5 = typeof value.md5HexStr === 'string' ? value.md5HexStr : '';
+  if (/^[0-9a-fA-F]{32}$/.test(md5)) return `${GCHAT_HOST}/gchatpic_new/0/0-0-${md5.toUpperCase()}/0`;
+  return undefined;
+}
+
+export function convertSegment(element, replyId, forward, io = defaultIo) {
   const fallback = () => ({ type: 'openqq_element', data: { element_type: element.elementType, element } });
   if (element.elementType === 1) {
     const value = element.textElement;
@@ -23,7 +58,11 @@ export function convertSegment(element, replyId, forward) {
     if (!text(file)) return fallback();
     const data = { file, ...(value.fileUuid ? { file_id: String(value.fileUuid) } : {}) };
     if (text(value.filePath)) data.path = value.filePath;
-    if (text(value.originImageUrl) && /^https?:\/\//.test(value.originImageUrl)) data.url = value.originImageUrl;
+    if (media[0] === 'image') {
+      const url = imageUrl(value);
+      if (url) data.url = url;
+      inlinePicture(data, io);
+    } else if (text(value.originImageUrl) && /^https?:\/\//.test(value.originImageUrl)) data.url = value.originImageUrl;
     if (numeric(value.fileSize)) data.file_size = Number(value.fileSize);
     return { type: media[0], data };
   }
@@ -49,6 +88,8 @@ export function convertSegment(element, replyId, forward) {
 const escape = value => String(value).replaceAll('&', '&amp;').replaceAll('[', '&#91;').replaceAll(']', '&#93;');
 export function cqString(segments) {
   // A forward's expanded content stays in the array form; its CQ code carries only the id, as in go-cqhttp.
+  // An inlined picture keeps its base64 in the array form only, so raw_message does not carry the file twice.
+  const brief = data => typeof data.file === 'string' && data.file.startsWith('base64://') ? { ...data, file: 'base64://...' } : data;
   return segments.map(segment => segment.type === 'text' ? escape(segment.data.text)
-    : `[CQ:${segment.type}${Object.entries(segment.type === 'forward' ? { id: segment.data.id } : segment.data).map(([key, value]) => `,${key}=${escape(typeof value === 'object' ? JSON.stringify(value) : value).replaceAll(',', '&#44;')}`).join('')}]`).join('');
+    : `[CQ:${segment.type}${Object.entries(segment.type === 'forward' ? { id: segment.data.id } : brief(segment.data)).map(([key, value]) => `,${key}=${escape(typeof value === 'object' ? JSON.stringify(value) : value).replaceAll(',', '&#44;')}`).join('')}]`).join('');
 }

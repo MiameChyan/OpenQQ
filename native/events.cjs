@@ -1,5 +1,6 @@
 'use strict';
 
+const { existsSync } = require('node:fs');
 const { readSystemEvent } = require('./system.cjs');
 const validUin = value => /^[1-9]\d*$/.test(String(value)) && Number.isSafeInteger(Number(value));
 const now = () => Math.floor(Date.now() / 1000);
@@ -9,9 +10,39 @@ const FORWARD_LIMIT = 200;
 const FORWARD_BYTES = 512 * 1024;
 // A member who just joined or left is often unknown to every UID store until QQ pushes the refreshed member list.
 const MEMBER_RETRY_MS = 1500;
+// Received pictures are not on disk yet. Ask QQ to fetch the original before reporting the message, so the
+// event can carry a local file (the host inlines it); give up after this long and report the message anyway.
+const MEDIA_TIMEOUT_MS = 10000;
 
-function createEventReceiver(session, self, report, current, { memberRetryMs = MEMBER_RETRY_MS } = {}) {
+function createEventReceiver(session, self, report, current, {
+  memberRetryMs = MEMBER_RETRY_MS, mediaTimeoutMs = MEDIA_TIMEOUT_MS, mediaExists = existsSync,
+} = {}) {
   const cache = new Map();
+  const mediaWaiters = new Map();
+  const safeExists = value => { try { return typeof value === 'string' && value.length > 0 && mediaExists(value); } catch { return false; } };
+  async function downloadPicture(peer, msgId, element) {
+    const pic = element.picElement;
+    if (safeExists(pic.sourcePath)) return pic.sourcePath;
+    const elementId = String(element.elementId ?? '');
+    if (!/^\d+$/.test(msgId) || !/^\d+$/.test(elementId)) return undefined;
+    const key = `${msgId}:${elementId}`;
+    let finish;
+    const done = new Promise(resolve => {
+      const timer = setTimeout(() => finish(undefined), mediaTimeoutMs);
+      finish = value => { clearTimeout(timer); mediaWaiters.delete(key); resolve(value); };
+      mediaWaiters.set(key, finish);
+    });
+    try {
+      const result = await session.getMsgService().downloadRichMedia({ fileModelId: '0', downSourceType: 0, downloadSourceType: 0,
+        triggerType: 1, msgId, chatType: peer.chatType, peerUid: peer.peerUid, elementId, thumbSize: 0, downloadType: 1,
+        filePath: typeof pic.thumbPath?.get === 'function' ? (pic.thumbPath.get(0) ?? '') : '' });
+      if (result && Number(result.result ?? 0) !== 0) finish(undefined);
+    } catch (error) {
+      emit({ type: 'event_error', stage: 'msg/picture', error: error.message + '，图片未下载，消息照常上报' });
+      finish(undefined);
+    }
+    return done;
+  }
   const seenShapes = new Set();
   const members = new Map();
   const started = now();
@@ -202,6 +233,10 @@ function createEventReceiver(session, self, report, current, { memberRetryMs = M
         }
         return { ...element, multiForwardMsgElement: { ...forward, openqq: { ...ref, ...(messages ? { messages } : {}) } } };
       }
+      if (element.elementType === 2 && element.picElement && ctx.depth === 0) {
+        const filePath = await downloadPicture(ctx.peer, msgId, element);
+        return filePath ? { ...element, picElement: { ...element.picElement, filePath } } : element;
+      }
       return element;
     }));
   }
@@ -307,6 +342,13 @@ function createEventReceiver(session, self, report, current, { memberRetryMs = M
 
   async function receive(source, name, args) {
     if (source === 'msg') {
+      if (name === 'onRichMediaDownloadComplete') {
+        const info = args[0] ?? {};
+        const finish = mediaWaiters.get(`${info.msgId}:${info.msgElementId}`);
+        // QQ reports completion after the file is written; a non-zero error code means the download failed.
+        if (finish) finish(Number(info.fileErrCode ?? 0) === 0 && typeof info.filePath === 'string' && info.filePath ? info.filePath : undefined);
+        return;
+      }
       if (name === 'onNtMsgSyncStart' || name === 'onNtMsgSyncEnd') {
         syncing = name === 'onNtMsgSyncStart';
         emit({ type: 'sync_state', syncing });
