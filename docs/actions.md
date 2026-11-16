@@ -142,6 +142,14 @@ ffmpeg 取自 `PATH`，也可以用环境变量 `OPENQQ_FFMPEG` 指定。`silk-w
 
 每个节点同时有 `message`（NapCat 格式）和 `content`（go-cqhttp 格式）。转发里查不到 QQ 号的作者，`user_id` 是 `0`，昵称保留。`raw_message` 里的转发只写成 `[CQ:forward,id=…]`。
 
+## 获取消息
+
+`get_msg` 按 `message_id` 返回本次运行期间收到过、或通过 OpenQQ 发出过的消息（最多 2000 条），不向 QQ 查询，框架解析引用回复时会用到。自己发出的消息记录的是请求发送时的消息段，`sender.nickname` 为空。内嵌的图片、语音等 `base64://` 内容不保留，`file` 换成文件名。重启后旧的 `message_id` 都会失效，返回 `1404`。
+
+```json
+{"status":"ok","retcode":0,"data":{"time":1794470400,"message_type":"private","message_id":12,"real_id":12,"sender":{"user_id":123456789,"nickname":"昵称"},"message":[{"type":"text","data":{"text":"内容"}}],"raw_message":"内容"}}
+```
+
 ## 回执
 
 发送成功的回执示例：
@@ -177,6 +185,6 @@ ffmpeg 取自 `PATH`，也可以用环境变量 `OPENQQ_FFMPEG` 指定。`silk-w
 
 ## 尚未实现
 
-戳一戳发送、设置群头衔（这个版本的 QQ 没有现成接口）、音乐卡片、合并转发发送、`get_msg`、好友列表、陌生人资料、匿名相关动作、群荣誉等。
+戳一戳发送、设置群头衔（这个版本的 QQ 没有现成接口）、音乐卡片、合并转发发送、好友列表、陌生人资料、匿名相关动作、群荣誉等。
 
 协议字段参考 [OneBot v11 公开 API](https://github.com/botuniverse/onebot-11/blob/master/api/public.md)。输入状态、申请 `flag` 的格式是 OpenQQ 的扩展。

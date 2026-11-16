@@ -45,10 +45,15 @@ export async function dispatchAction(channel, converter, request, options = {}) 
   let release = async () => {};
   try {
     const local = localAnswer(request, options);
-    if (local !== undefined) {
+    if (request?.action === 'get_msg') {
+      const found = converter.getMessage?.(request.params?.message_id);
+      if (!found) throw fail('message_id 不存在或已过期（仅支持本次运行期间收发过的消息）', 1404);
+      response = { status: 'ok', retcode: 0, data: found };
+    } else if (local !== undefined) {
       response = { status: 'ok', retcode: 0, data: local };
     } else {
       let prepared = resolveReferences(converter, nativeActions.normalizeParams(request));
+      const sentSegments = Array.isArray(prepared?.params?.message) ? prepared.params.message : [];
       if (options.media && sendActions.includes(prepared?.action) && prepared.params && typeof prepared.params === 'object') {
         const media = await options.media.prepare(prepared.params);
         prepared = { ...prepared, params: media.params };
@@ -59,7 +64,10 @@ export async function dispatchAction(channel, converter, request, options = {}) 
       if (!response || !['ok', 'failed'].includes(response.status) || !Number.isSafeInteger(response.retcode)) throw new Error('原生动作回执无效');
       if (response.status === 'ok' && response.retcode !== 0) throw new Error('原生动作回执状态不一致');
       if (response.status === 'ok' && action.kind === 'send') {
-        response = { status: 'ok', retcode: 0, data: { message_id: converter.messageId(response.data.self, response.data.message) } };
+        const messageId = converter.recordSent
+          ? converter.recordSent(response.data.self, response.data.message, sentSegments)
+          : converter.messageId(response.data.self, response.data.message);
+        response = { status: 'ok', retcode: 0, data: { message_id: messageId } };
       }
       if (response.status === 'ok' && action.kind === 'forward') {
         response = { status: 'ok', retcode: 0, data: converter.forwardResult(response.data.self, response.data.forward) };

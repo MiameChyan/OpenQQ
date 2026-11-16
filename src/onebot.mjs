@@ -1,4 +1,19 @@
+import { win32 } from 'node:path';
 import { convertSegment, cqString } from './segments.mjs';
+
+// get_msg answers from messages seen in this run (received, and sent through OpenQQ); QQ is not asked.
+const STORED_LIMIT = 2000;
+// Stored copies are independent of the live event and drop inline media, which only matters for the first delivery.
+export function slimForStorage(segments) {
+  return segments.filter(segment => segment && typeof segment === 'object').map(segment => {
+    const copy = structuredClone(segment);
+    if (typeof copy.data?.file === 'string' && copy.data.file.startsWith('base64://')) {
+      copy.data.file = typeof copy.data.path === 'string' && copy.data.path ? win32.basename(copy.data.path) : String(copy.type);
+    }
+    if (copy.type === 'reply' && copy.data) delete copy.data.openqq_ref;
+    return copy;
+  });
+}
 
 function integer(value, field, min = 0) {
   if ((typeof value !== 'string' && typeof value !== 'number') || !/^-?\d+$/.test(String(value)) || !Number.isSafeInteger(Number(value)) || Number(value) < min) {
@@ -12,6 +27,11 @@ export function createEventConverter() {
   const ids = new Map();
   const refs = new Map();
   const seen = new Map();
+  const stored = new Map();
+  const store = (messageId, payload) => {
+    stored.set(messageId, payload);
+    if (stored.size > STORED_LIMIT) stored.delete(stored.keys().next().value);
+  };
   let nextId = 1;
   const keyOf = (selfId, message, nativeId = message.msgId) => {
     if (!/^\d+$/.test(String(nativeId)) || (typeof nativeId === 'number' && !Number.isSafeInteger(nativeId))) {
@@ -86,6 +106,9 @@ export function createEventConverter() {
         event.sender.card = String(message.sendMemberName ?? '');
         event.anonymous = null;
       }
+      const kept = slimForStorage(segments);
+      store(event.message_id, { time, message_type: event.message_type, message_id: event.message_id, real_id: event.message_id,
+        sender: { ...event.sender }, message: kept, raw_message: cqString(kept), ...(groupId !== undefined ? { group_id: groupId } : {}) });
     }
     if (groupId !== undefined) event.group_id = groupId;
     return { event: { time, self_id: selfId, ...event }, key: key + ':' + event.post_type };
@@ -126,6 +149,21 @@ export function createEventConverter() {
     return result.event;
   };
   convert.messageId = (self, message) => messageRef(id(self.uin, 'self_id'), message);
+  // A message we sent: QQ's receipt has no content, so keep the segments that were asked to be sent.
+  convert.recordSent = (self, message, segments) => {
+    const selfId = id(self.uin, 'self_id');
+    const messageId = messageRef(selfId, message);
+    const kept = slimForStorage(Array.isArray(segments) ? segments : []);
+    store(messageId, { time: Math.floor(Date.now() / 1000), message_type: message.chatType === 2 ? 'group' : 'private',
+      message_id: messageId, real_id: messageId, sender: { user_id: selfId, nickname: '' }, message: kept, raw_message: cqString(kept),
+      ...(message.chatType === 2 ? { group_id: id(message.peerUid, 'group_id') } : {}) });
+    return messageId;
+  };
+  convert.getMessage = value => {
+    if ((typeof value !== 'string' && typeof value !== 'number') || !/^[1-9]\d*$/.test(String(value))) return undefined;
+    const found = stored.get(Number(value));
+    return found ? structuredClone(found) : undefined;
+  };
   // OneBot id → native reference (message or forward) seen in this run, or undefined.
   convert.resolve = value => {
     if ((typeof value !== 'string' && typeof value !== 'number') || !/^[1-9]\d*$/.test(String(value))) return undefined;
