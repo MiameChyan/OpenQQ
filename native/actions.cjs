@@ -224,7 +224,7 @@ function createActionHandler(session, self, current, options = {}) {
           return { self, forward: { ref: action.ref, messages } };
         }
         if (action.kind === 'get_msg') {
-          const peer = { chatType: action.ref.chatType, peerUid: action.ref.peerUid, guildId: '0' };
+          const peer = { chatType: action.ref.chatType, peerUid: action.ref.peerUid, guildId: '' };
           const result = await session.getMsgService().getMsgsByMsgId(peer, [action.ref.msgId]);
           ensure();
           if (result && typeof result.result === 'number' && result.result !== 0) throw fail('QQ 拒绝读取消息：' + (result.errMsg || result.result), 1500);

@@ -132,7 +132,7 @@ const ref = { chatType: 1, peerUid: 'u_actor', msgId: '5001' };
 test('native get_msg reads QQ history with a validated peer and returns the raw message', async t => {
   const f = nativeFixture(t, { result: 0, msgList: [oldOwnMessage] });
   const out = await f.handler.execute({ action: 'get_msg', params: { message_id: 1, openqq_ref: ref } });
-  assert.deepEqual(f.calls, [{ peer: { chatType: 1, peerUid: 'u_actor', guildId: '0' }, ids: ['5001'] }]);
+  assert.deepEqual(f.calls, [{ peer: { chatType: 1, peerUid: 'u_actor', guildId: '' }, ids: ['5001'] }], 'same peer shape as NapCat');
   assert.equal(out.self, self);
   assert.equal(out.message.msgId, '5001');
   assert.equal(out.message.senderUin, '123456');
@@ -152,4 +152,41 @@ test('native get_msg reports a missing or refused message', async t => {
     error => error.retcode === 1404);
   await assert.rejects(nativeFixture(t, { result: 5, errMsg: 'denied' }).handler.execute({ action: 'get_msg', params: { openqq_ref: ref } }),
     error => error.retcode === 1500);
+});
+
+// ---- the quoted message's own copy travels in `records`; that is enough to answer get_msg without asking QQ ----
+const recordCopy = { msgId: '6001', msgTime: '1794470200', senderUid: 'u_self', senderUin: '0', sendNickName: '',
+  elements: [text('考完说一声')] };
+const quotingWithRecord = (convert, record = recordCopy) => convert(incoming({ msgId: '7200',
+  elements: [{ elementType: 7, replyElement: { sourceMsgIdInRecords: '6001', replayMsgSeq: '88' } }, text('好的')],
+  records: [record] }));
+
+test('a quote is answered from the copy QQ attaches in records, with no QQ call', async () => {
+  const convert = createEventConverter();
+  const quoteId = quotingWithRecord(convert).message[0].data.id;
+  const channel = fakeChannel(() => { throw new Error('should not be called'); });
+  const res = await dispatchAction(channel, convert, { action: 'get_msg', params: { message_id: quoteId } });
+  assert.equal(res.status, 'ok');
+  assert.equal(channel.calls.length, 0);
+  assert.equal(String(res.data.message_id), String(quoteId));
+  assert.equal(res.data.sender.user_id, 123456, 'senderUin 0 with our own uid resolves to self');
+  assert.equal(res.data.time, 1794470200);
+  assert.deepEqual(res.data.message, [{ type: 'text', data: { text: '考完说一声' } }]);
+});
+
+test('a record from someone else keeps their number and nickname', async () => {
+  const convert = createEventConverter();
+  const quoteId = quotingWithRecord(convert, { ...recordCopy, senderUid: 'u_other', senderUin: '456789', sendNickName: '别人' })
+    .message[0].data.id;
+  const res = await dispatchAction(fakeChannel(null), convert, { action: 'get_msg', params: { message_id: quoteId } });
+  assert.deepEqual(res.data.sender, { user_id: 456789, nickname: '别人' });
+});
+
+test('a record with no usable content falls back to the history lookup', async () => {
+  const convert = createEventConverter();
+  const quoteId = quotingWithRecord(convert, { ...recordCopy, elements: [] }).message[0].data.id;
+  const channel = fakeChannel({ status: 'failed', retcode: 1404, data: null, message: '这条消息在本机记录中已不存在' });
+  const res = await dispatchAction(channel, convert, { action: 'get_msg', params: { message_id: quoteId } });
+  assert.equal(channel.calls.length, 1);
+  assert.equal(res.retcode, 1404);
 });

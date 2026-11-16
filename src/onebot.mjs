@@ -78,6 +78,31 @@ export function createEventConverter() {
     if (Array.isArray(ref.messages)) data.content = forwardNodes(selfId, ref, ref.messages);
     return { type: 'forward', data };
   }
+  // A reply carries a copy of the quoted message in `records` (sourceMsgIdInRecords points at that copy, not at the
+  // message in chat history), so keep it under the quote's id: get_msg then answers any quote, however old.
+  function storeQuotes(self, selfId, message, groupId) {
+    if (!Array.isArray(message.records) || !message.records.length) return;
+    for (const element of message.elements) {
+      const reply = element?.elementType === 7 ? element.replyElement : undefined;
+      const original = reply ? reply.sourceMsgIdInRecords || reply.replayMsgId : undefined;
+      if (!/^\d+$/.test(String(original ?? ''))) continue;
+      const record = message.records.find(item => String(item?.msgId) === String(original));
+      if (!record || !Array.isArray(record.elements) || !record.elements.length) continue;
+      try {
+        const messageId = messageRef(selfId, message, original);
+        if (stored.has(messageId)) continue;
+        const senderId = /^[1-9]\d*$/.test(String(record.senderUin)) && Number.isSafeInteger(Number(record.senderUin)) ? Number(record.senderUin)
+          : record.senderUid && record.senderUid === self.uid ? selfId : 0;
+        const kept = slimForStorage(record.elements.map(item => convertSegment(item, inner => messageRef(selfId, message, inner),
+          ref => forwardSegment(selfId, ref))));
+        const sender = { user_id: senderId, nickname: String(record.sendNickName ?? '') };
+        if (message.chatType === 2) sender.card = String(record.sendMemberName ?? '');
+        store(messageId, { time: /^\d+$/.test(String(record.msgTime)) ? Number(record.msgTime) : 0,
+          message_type: message.chatType === 2 ? 'group' : 'private', message_id: messageId, real_id: messageId, sender,
+          message: kept, raw_message: cqString(kept), ...(groupId !== undefined ? { group_id: groupId } : {}) });
+      } catch { /* a quote that cannot be converted is just not cached; get_msg falls back to QQ history */ }
+    }
+  }
   function messageEvent(self, message) {
     if (![1, 2, 100].includes(message.chatType)) return null;
     const selfId = id(self.uin, 'self_id');
@@ -109,6 +134,7 @@ export function createEventConverter() {
       const kept = slimForStorage(segments);
       store(event.message_id, { time, message_type: event.message_type, message_id: event.message_id, real_id: event.message_id,
         sender: { ...event.sender }, message: kept, raw_message: cqString(kept), ...(groupId !== undefined ? { group_id: groupId } : {}) });
+      storeQuotes(self, selfId, message, groupId);
     }
     if (groupId !== undefined) event.group_id = groupId;
     return { event: { time, self_id: selfId, ...event }, key: key + ':' + event.post_type };
