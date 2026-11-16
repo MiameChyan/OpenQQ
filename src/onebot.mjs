@@ -1,5 +1,5 @@
 import { win32 } from 'node:path';
-import { convertSegment, cqString } from './segments.mjs';
+import { convertSegment, cqString, inlinePicture } from './segments.mjs';
 
 // get_msg answers from messages seen in this run (received, and sent through OpenQQ); QQ is not asked.
 const STORED_LIMIT = 2000;
@@ -13,6 +13,19 @@ export function slimForStorage(segments) {
     if (copy.type === 'reply' && copy.data) delete copy.data.openqq_ref;
     return copy;
   });
+}
+
+// get_msg answers with pictures inlined again from disk, so a quoted picture reaches a framework that cannot read
+// this machine's files; the cache keeps only the path. raw_message keeps the short form.
+export function inlineStored(payload, io) {
+  if (!payload || !Array.isArray(payload.message)) return payload;
+  const message = payload.message.map(segment => {
+    if (segment?.type !== 'image' || typeof segment.data?.path !== 'string' || String(segment.data.file).startsWith('base64://')) return segment;
+    const data = { ...segment.data };
+    inlinePicture(data, io);
+    return { ...segment, data };
+  });
+  return { ...payload, message };
 }
 
 function integer(value, field, min = 0) {

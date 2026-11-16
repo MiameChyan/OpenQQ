@@ -1,4 +1,5 @@
 import nativeActions from '../native/actions.cjs';
+import { inlineStored } from './onebot.mjs';
 
 const fail = (message, retcode = 1400) => Object.assign(new Error(message), { retcode });
 const sendActions = ['send_private_msg', 'send_group_msg', 'send_msg'];
@@ -59,7 +60,7 @@ export async function dispatchAction(channel, converter, request, options = {}) 
         if (reply.status !== 'ok') throw fail(reply.message ?? '读取消息失败', reply.retcode);
         found = converter.rememberHistory(reply.data.self, reply.data.message);
       }
-      response = { status: 'ok', retcode: 0, data: found };
+      response = { status: 'ok', retcode: 0, data: inlineStored(found) };
     } else if (local !== undefined) {
       response = { status: 'ok', retcode: 0, data: local };
     } else {

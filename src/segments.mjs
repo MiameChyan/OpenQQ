@@ -7,7 +7,7 @@ const text = value => typeof value === 'string' && value.length > 0;
 // still sees it. Larger files keep only the url fallback.
 const INLINE_LIMIT = 5 * 1024 * 1024;
 const defaultIo = { stat: statSync, read: readFileSync };
-function inlinePicture(data, io) {
+export function inlinePicture(data, io = defaultIo) {
   if (!text(data.path)) return;
   try {
     const info = io.stat(data.path);

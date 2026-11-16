@@ -61,6 +61,45 @@ function createEventReceiver(session, self, report, current, {
     }
     return done;
   }
+  // A reply carries a copy of the quoted message in `records`; QQ does not download its pictures either, and the url
+  // it gives for them returns 404. Try the copy first, then the original message found by the quote's seq.
+  async function quotedPicture(peer, record, element, seq) {
+    const direct = await downloadPicture(peer, String(record.msgId ?? ''), element);
+    if (direct) return direct;
+    const md5 = String(element.picElement?.md5HexStr ?? '').toLowerCase();
+    if (!/^\d+$/.test(String(seq ?? '')) || !/^[0-9a-f]{32}$/.test(md5)) return undefined;
+    try {
+      const result = await session.getMsgService().getMsgsBySeqAndCount({ chatType: peer.chatType, peerUid: peer.peerUid, guildId: '' },
+        String(seq), 1, true, true);
+      const original = (Array.isArray(result?.msgList) ? result.msgList : []).find(item => String(item?.msgSeq) === String(seq));
+      const match = (Array.isArray(original?.elements) ? original.elements : [])
+        .find(item => item?.elementType === 2 && String(item.picElement?.md5HexStr ?? '').toLowerCase() === md5);
+      if (match) return await downloadPicture(peer, String(original.msgId ?? ''), match);
+    } catch (error) {
+      emit({ type: 'event_error', stage: 'msg/quote-picture', error: error.message + '，被引用的图片未下载，消息照常上报' });
+    }
+    return undefined;
+  }
+  async function prepareQuotes(input, peer) {
+    const records = input.records;
+    if (!Array.isArray(records) || !records.length) return undefined;
+    const quoted = new Map();
+    for (const element of Array.isArray(input.elements) ? input.elements : []) {
+      const reply = element?.elementType === 7 ? element.replyElement : undefined;
+      const original = reply ? String(reply.sourceMsgIdInRecords || reply.replayMsgId || '') : '';
+      if (/^\d+$/.test(original) && original !== '0') quoted.set(original, reply.replayMsgSeq);
+    }
+    if (!quoted.size) return undefined;
+    return Promise.all(records.map(async record => {
+      if (!record || !quoted.has(String(record.msgId)) || !Array.isArray(record.elements)) return record;
+      const elements = await Promise.all(record.elements.map(async element => {
+        if (element?.elementType !== 2 || !element.picElement) return element;
+        const filePath = await quotedPicture(peer, record, element, quoted.get(String(record.msgId)));
+        return filePath ? { ...element, picElement: { ...element.picElement, filePath } } : element;
+      }));
+      return { ...record, elements };
+    }));
+  }
   const seenShapes = new Set();
   const members = new Map();
   const started = now();
@@ -331,10 +370,13 @@ function createEventReceiver(session, self, report, current, {
     }
     const senderUin = await uin(input.senderUid, input.senderUin);
     record(input, senderUin);
-    const elements = await prepare(input.elements ?? [], { peer: { chatType: input.chatType, peerUid: String(input.peerUid) },
-      root: String(input.msgId), depth: 0, budget: { left: FORWARD_LIMIT } }, String(input.msgId));
+    const peer = { chatType: input.chatType, peerUid: String(input.peerUid) };
+    const [elements, records] = await Promise.all([
+      prepare(input.elements ?? [], { peer, root: String(input.msgId), depth: 0, budget: { left: FORWARD_LIMIT } }, String(input.msgId)),
+      prepareQuotes(input, peer),
+    ]);
     const nick = input.chatType !== 2 && !input.sendNickName ? await nickOf(input.senderUid) : '';
-    emit({ type: 'message', self, message: { ...input, senderUin, elements, ...(nick ? { sendNickName: nick } : {}) } });
+    emit({ type: 'message', self, message: { ...input, senderUin, elements, ...(records ? { records } : {}), ...(nick ? { sendNickName: nick } : {}) } });
     if (input.chatType === 2) for (const element of elements) {
       const file = element.fileElement;
       if (element.elementType === 3 && file?.fileUuid) notice({ notice_type: 'group_upload', group_id: input.peerUin ?? input.peerUid,
