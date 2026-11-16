@@ -124,6 +124,12 @@ function validateAction(request) {
     if (!ref) throw fail('合并转发 id 无效或已过期（仅支持本次运行期间收到的消息）', 1404);
     return { kind: 'forward', ref };
   }
+  if (request.action === 'get_msg') {
+    // Only reached when the main process has no copy; QQ crashes on malformed peers, so the reference is strictly checked.
+    const ref = nativeRef(params.openqq_ref);
+    if (!ref) throw fail('message_id 不存在或已过期（仅支持本次运行期间收发过的消息）', 1404);
+    return { kind: 'get_msg', ref };
+  }
   const managed = admin.validate(request, params);
   if (managed) return managed;
   if (!sendActions.includes(request.action)) throw fail('尚未支持动作: ' + request.action, 1404);
@@ -216,6 +222,19 @@ function createActionHandler(session, self, current, options = {}) {
           const messages = await options.expandForward(action.ref);
           ensure();
           return { self, forward: { ref: action.ref, messages } };
+        }
+        if (action.kind === 'get_msg') {
+          const peer = { chatType: action.ref.chatType, peerUid: action.ref.peerUid, guildId: '0' };
+          const result = await session.getMsgService().getMsgsByMsgId(peer, [action.ref.msgId]);
+          ensure();
+          if (result && typeof result.result === 'number' && result.result !== 0) throw fail('QQ 拒绝读取消息：' + (result.errMsg || result.result), 1500);
+          const raw = Array.isArray(result?.msgList) ? result.msgList.find(item => String(item?.msgId) === action.ref.msgId) : undefined;
+          if (!raw || !Array.isArray(raw.elements) || !raw.elements.length) throw fail('这条消息在本机记录中已不存在', 1404);
+          const senderUin = /^[1-9]\d*$/.test(String(raw.senderUin)) ? String(raw.senderUin) : raw.senderUid === self.uid ? self.uin : '';
+          if (!senderUin) throw fail('无法确定这条消息的发送者', 1404);
+          return { self, message: { chatType: action.ref.chatType, peerUid: action.ref.peerUid, peerUin: raw.peerUin, msgId: action.ref.msgId,
+            msgTime: raw.msgTime, senderUin, senderUid: raw.senderUid, sendNickName: raw.sendNickName ?? '', sendMemberName: raw.sendMemberName ?? '',
+            elements: raw.elements } };
         }
         if (admin.kinds.has(action.kind)) {
           return await admin.run(action, {

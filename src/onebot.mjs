@@ -159,6 +159,24 @@ export function createEventConverter() {
       ...(message.chatType === 2 ? { group_id: id(message.peerUid, 'group_id') } : {}) });
     return messageId;
   };
+  // A message read back from QQ's history (any sender, ourselves included): convert it like a received one and keep it.
+  convert.rememberHistory = (self, message) => {
+    const selfId = id(self.uin, 'self_id');
+    if (!message || ![1, 2, 100].includes(message.chatType) || !Array.isArray(message.elements) || !message.elements.length) {
+      throw new Error('原生消息记录无效');
+    }
+    const senderId = id(message.senderUin, 'user_id');
+    const segments = message.elements.map(element => convertSegment(element, original => messageRef(selfId, message, original),
+      ref => forwardSegment(selfId, ref)));
+    const messageId = messageRef(selfId, message);
+    const sender = { user_id: senderId, nickname: String(message.sendNickName ?? '') };
+    if (message.chatType === 2) sender.card = String(message.sendMemberName ?? '');
+    const kept = slimForStorage(segments);
+    store(messageId, { time: id(message.msgTime, 'time'), message_type: message.chatType === 2 ? 'group' : 'private',
+      message_id: messageId, real_id: messageId, sender, message: kept, raw_message: cqString(kept),
+      ...(message.chatType === 2 ? { group_id: id(message.peerUin ?? message.peerUid, 'group_id') } : {}) });
+    return structuredClone(stored.get(messageId));
+  };
   convert.getMessage = value => {
     if ((typeof value !== 'string' && typeof value !== 'number') || !/^[1-9]\d*$/.test(String(value))) return undefined;
     const found = stored.get(Number(value));

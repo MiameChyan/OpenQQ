@@ -46,8 +46,19 @@ export async function dispatchAction(channel, converter, request, options = {}) 
   try {
     const local = localAnswer(request, options);
     if (request?.action === 'get_msg') {
-      const found = converter.getMessage?.(request.params?.message_id);
-      if (!found) throw fail('message_id 不存在或已过期（仅支持本次运行期间收发过的消息）', 1404);
+      const messageId = request.params?.message_id;
+      let found = converter.getMessage?.(messageId);
+      if (!found) {
+        // Not seen in this run (e.g. a quote of a message from before a restart): ask QQ's own history once.
+        const ref = converter.resolve?.(messageId);
+        if (ref?.kind !== 'message') throw fail('message_id 不存在或已过期（仅支持本次运行期间收发过的消息）', 1404);
+        const prepared = { action: 'get_msg', params: { message_id: messageId, openqq_ref: { chatType: ref.chatType, peerUid: ref.peerUid, msgId: ref.msgId } } };
+        const action = nativeActions.validateAction(prepared);
+        const reply = await channel.request(prepared, (action.timeout ?? 15000) + 5000);
+        if (!reply || !['ok', 'failed'].includes(reply.status) || !Number.isSafeInteger(reply.retcode)) throw new Error('原生动作回执无效');
+        if (reply.status !== 'ok') throw fail(reply.message ?? '读取消息失败', reply.retcode);
+        found = converter.rememberHistory(reply.data.self, reply.data.message);
+      }
       response = { status: 'ok', retcode: 0, data: found };
     } else if (local !== undefined) {
       response = { status: 'ok', retcode: 0, data: local };

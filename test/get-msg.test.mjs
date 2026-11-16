@@ -85,3 +85,71 @@ test('storage copies drop base64 payloads and native reply refs, and do not shar
   live[3].data.text = 'changed';
   assert.equal(stored[3].data.text, 'hi');
 });
+
+// ---- a quoted message from before this run: fetched from QQ's own history once, then cached ----
+const quoting = (convert, oldMsgId = '5001') => convert(incoming({ msgId: '7100',
+  elements: [{ elementType: 7, replyElement: { sourceMsgIdInRecords: oldMsgId } }, text('好的，我出发了')] }));
+const oldOwnMessage = { chatType: 1, peerUid: 'u_actor', peerUin: '654321', msgId: '5001', msgTime: '1794470300',
+  senderUin: '123456', senderUid: 'u_self', sendNickName: '', elements: [text('唔姆，稳住')] };
+
+test('a quoted message missing from the cache is fetched from QQ history and then cached', async () => {
+  const convert = createEventConverter();
+  const quoteId = quoting(convert).message[0].data.id;
+  const channel = fakeChannel({ status: 'ok', retcode: 0, data: { self, message: oldOwnMessage } });
+  const res = await dispatchAction(channel, convert, { action: 'get_msg', params: { message_id: quoteId } });
+  assert.equal(res.status, 'ok');
+  assert.equal(channel.calls.length, 1);
+  assert.equal(channel.calls[0].action, 'get_msg');
+  assert.deepEqual(channel.calls[0].params.openqq_ref, { chatType: 1, peerUid: 'u_actor', msgId: '5001' });
+  assert.equal(String(res.data.message_id), String(quoteId));
+  assert.equal(res.data.sender.user_id, 123456, 'our own old reply is returned too');
+  assert.deepEqual(res.data.message, [{ type: 'text', data: { text: '唔姆，稳住' } }]);
+  const again = await dispatchAction(channel, convert, { action: 'get_msg', params: { message_id: quoteId } });
+  assert.equal(again.status, 'ok');
+  assert.equal(channel.calls.length, 1, 'served from the cache the second time');
+});
+
+test('a history lookup QQ cannot answer is passed through as a failure', async () => {
+  const convert = createEventConverter();
+  const quoteId = quoting(convert).message[0].data.id;
+  const channel = fakeChannel({ status: 'failed', retcode: 1404, data: null, message: '这条消息在本机已不存在' });
+  const res = await dispatchAction(channel, convert, { action: 'get_msg', params: { message_id: quoteId } });
+  assert.equal(res.status, 'failed');
+  assert.equal(res.retcode, 1404);
+});
+
+// ---- native side ----
+import nativeActions from '../native/actions.cjs';
+function nativeFixture(t, reply) {
+  const calls = [];
+  const session = { getMsgService: () => ({ getMsgsByMsgId: async (peer, ids) => { calls.push({ peer, ids }); return typeof reply === 'function' ? reply() : reply; } }) };
+  const handler = nativeActions.createActionHandler(session, self, () => true);
+  t.after(() => handler.dispose());
+  return { handler, calls };
+}
+const ref = { chatType: 1, peerUid: 'u_actor', msgId: '5001' };
+
+test('native get_msg reads QQ history with a validated peer and returns the raw message', async t => {
+  const f = nativeFixture(t, { result: 0, msgList: [oldOwnMessage] });
+  const out = await f.handler.execute({ action: 'get_msg', params: { message_id: 1, openqq_ref: ref } });
+  assert.deepEqual(f.calls, [{ peer: { chatType: 1, peerUid: 'u_actor', guildId: '0' }, ids: ['5001'] }]);
+  assert.equal(out.self, self);
+  assert.equal(out.message.msgId, '5001');
+  assert.equal(out.message.senderUin, '123456');
+  assert.deepEqual(out.message.elements, oldOwnMessage.elements);
+});
+
+test('native get_msg never calls QQ with an invalid reference', async t => {
+  const f = nativeFixture(t, { result: 0, msgList: [] });
+  for (const bad of [undefined, { ...ref, chatType: 9 }, { ...ref, peerUid: '' }, { ...ref, msgId: 'x' }]) {
+    await assert.rejects(f.handler.execute({ action: 'get_msg', params: { openqq_ref: bad } }), error => error.retcode === 1404);
+  }
+  assert.equal(f.calls.length, 0);
+});
+
+test('native get_msg reports a missing or refused message', async t => {
+  await assert.rejects(nativeFixture(t, { result: 0, msgList: [] }).handler.execute({ action: 'get_msg', params: { openqq_ref: ref } }),
+    error => error.retcode === 1404);
+  await assert.rejects(nativeFixture(t, { result: 5, errMsg: 'denied' }).handler.execute({ action: 'get_msg', params: { openqq_ref: ref } }),
+    error => error.retcode === 1500);
+});
