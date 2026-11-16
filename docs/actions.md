@@ -175,7 +175,7 @@ ffmpeg 取自 `PATH`，也可以用环境变量 `OPENQQ_FFMPEG` 指定。`silk-w
 
 普通动作最多等 15 秒左右（带媒体的发送见上面），IPC 另有兜底超时。OpenQQ 不会自动重发；超时或断线之后，请先在 QQ 里确认消息有没有发出去。重新登录、会话重建或退出 OpenQQ 会阻止还没提交的旧动作，但已经交给 QQ 的发送没法靠断开 IPC 撤回。
 
-`get_login_info` 目前返回账号的 QQ 号，昵称是空字符串。`get_status` 目前只反映原生会话是否可用，没有做完整的网络连通性探测。
+`get_login_info` 目前返回账号的 QQ 号，昵称是空字符串。`get_stranger_info` 只返回 `user_id` 和 `nickname`（来自 QQ 资料服务，查不到时为空），性别、年龄等是占位值；框架在 @ 的人没有群名片时用它取昵称，失败会让 AstrBot 丢掉整个 @ 段。`get_status` 目前只反映原生会话是否可用，没有做完整的网络连通性探测。
 
 ## 测试情况
 
@@ -185,6 +185,6 @@ ffmpeg 取自 `PATH`，也可以用环境变量 `OPENQQ_FFMPEG` 指定。`silk-w
 
 ## 尚未实现
 
-戳一戳发送、设置群头衔（这个版本的 QQ 没有现成接口）、音乐卡片、合并转发发送、好友列表、陌生人资料、匿名相关动作、群荣誉等。
+戳一戳发送、设置群头衔（这个版本的 QQ 没有现成接口）、音乐卡片、合并转发发送、好友列表、匿名相关动作、群荣誉等。
 
 协议字段参考 [OneBot v11 公开 API](https://github.com/botuniverse/onebot-11/blob/master/api/public.md)。输入状态、申请 `flag` 的格式是 OpenQQ 的扩展。

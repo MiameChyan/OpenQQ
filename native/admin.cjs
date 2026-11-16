@@ -58,12 +58,15 @@ function validate(request, params) {
     case 'get_group_info': return { kind: 'group_info', group: group() };
     case 'get_group_member_list': return { kind: 'group_member_list', group: group() };
     case 'get_group_member_info': return { kind: 'group_member_info', group: group(), user: user() };
+    // Frameworks look up the nickname of an @-mentioned user here when the group card is empty; failing it makes
+    // AstrBot drop the whole @ segment, so a mention of the bot no longer wakes it.
+    case 'get_stranger_info': return { kind: 'stranger_info', user: user() };
     default: return null;
   }
 }
 
 const kinds = new Set(['group_kick', 'group_ban', 'group_whole_ban', 'group_admin', 'group_card', 'group_name', 'group_leave', 'group_request', 'friend_request',
-  'delete_msg', 'send_like', 'group_list', 'group_info', 'group_member_list', 'group_member_info']);
+  'delete_msg', 'send_like', 'group_list', 'group_info', 'group_member_list', 'group_member_info', 'stranger_info']);
 
 // QQ reports refusals inside the resolved value; methods that return nothing are treated as accepted.
 function outcome(result, what) {
@@ -158,6 +161,17 @@ async function run(action, ctx) {
       if (!info) info = (await members(action.group, true)).find(value => String(value.uin) === action.user);
       if (!info) throw fail('没有找到这个群成员', 1404);
       return memberOf(action.group, info);
+    }
+    case 'stranger_info': {
+      const uid = await ctx.uidFor(action.user);
+      ensure();
+      let core;
+      try {
+        const result = await session.getProfileService().getCoreAndBaseInfo('nodeStore', [uid]);
+        core = (result instanceof Map ? result.get(uid) : undefined)?.coreInfo;
+      } catch { /* answer without a nickname rather than failing the caller */ }
+      ensure();
+      return { user_id: Number(action.user), nickname: String(core?.nick || ''), sex: 'unknown', age: 0, qid: '', level: 0, login_days: 0 };
     }
     default: throw fail('尚未支持动作: ' + action.kind, 1404);
   }
