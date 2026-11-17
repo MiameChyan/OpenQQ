@@ -18,6 +18,26 @@ function createEventReceiver(session, self, report, current, {
   memberRetryMs = MEMBER_RETRY_MS, mediaTimeoutMs = MEDIA_TIMEOUT_MS, mediaExists = existsSync,
 } = {}) {
   const cache = new Map();
+  // Group role of each sender (OneBot sender.role). Frameworks such as SealDice gate group-admin commands on it.
+  // One lookup per member, refreshed by member info pushes; a failed lookup answers "member" (least privilege).
+  const roles = new Map();
+  const ROLE_TTL_MS = 10 * 60 * 1000;
+  const roleName = role => role === 4 ? 'owner' : role === 3 ? 'admin' : 'member';
+  const rememberRole = (group, uid, role) => {
+    if (!uid || typeof role !== 'number') return;
+    roles.set(`${group}:${uid}`, { role, at: Date.now() });
+    if (roles.size > 10000) roles.delete(roles.keys().next().value);
+  };
+  async function roleOf(group, uid) {
+    const hit = roles.get(`${group}:${uid}`);
+    if (hit && Date.now() - hit.at < ROLE_TTL_MS) return roleName(hit.role);
+    try {
+      const infos = (await session.getGroupService().getMemberInfo(group, [uid], false))?.result?.infos;
+      const role = infos instanceof Map ? infos.get(uid)?.role : undefined;
+      if (typeof role === 'number') { rememberRole(group, uid, role); return roleName(role); }
+    } catch { /* degrade to member below */ }
+    return 'member';
+  }
   // QQ leaves sendNickName empty on private messages. Nicknames come from the buddy list when it carries them,
   // otherwise from one profile lookup per user; a failed lookup only means the message goes out without a name.
   const nicks = new Map();
@@ -371,12 +391,14 @@ function createEventReceiver(session, self, report, current, {
     const senderUin = await uin(input.senderUid, input.senderUin);
     record(input, senderUin);
     const peer = { chatType: input.chatType, peerUid: String(input.peerUid) };
-    const [elements, records] = await Promise.all([
+    const [elements, records, senderRole] = await Promise.all([
       prepare(input.elements ?? [], { peer, root: String(input.msgId), depth: 0, budget: { left: FORWARD_LIMIT } }, String(input.msgId)),
       prepareQuotes(input, peer),
+      input.chatType === 2 ? roleOf(String(input.peerUin ?? input.peerUid), input.senderUid) : undefined,
     ]);
     const nick = input.chatType !== 2 && !input.sendNickName ? await nickOf(input.senderUid) : '';
-    emit({ type: 'message', self, message: { ...input, senderUin, elements, ...(records ? { records } : {}), ...(nick ? { sendNickName: nick } : {}) } });
+    emit({ type: 'message', self, message: { ...input, senderUin, elements, ...(records ? { records } : {}), ...(nick ? { sendNickName: nick } : {}),
+      ...(senderRole ? { senderRole } : {}) } });
     if (input.chatType === 2) for (const element of elements) {
       const file = element.fileElement;
       if (element.elementType === 3 && file?.fileUuid) notice({ notice_type: 'group_upload', group_id: input.peerUin ?? input.peerUid,
@@ -462,12 +484,13 @@ function createEventReceiver(session, self, report, current, {
         // Member list pushes carry uid → uin pairs; caching them lets membership notices and mentions resolve.
         const infos = args[0]?.infos;
         if (!(infos instanceof Map)) { native(source, name, args); return; }
-        for (const [uid, info] of infos) remember(uid, info?.uin);
+        for (const [uid, info] of infos) { remember(uid, info?.uin); rememberRole(String(args[0]?.groupCode ?? ''), uid, info?.role); }
         return;
       }
       if (name === 'onMemberInfoChange') {
         for (const [uid, info] of args[2] instanceof Map ? args[2] : []) {
           remember(uid, info.uin);
+          rememberRole(String(args[0]), uid, info.role);
           const key = `${args[0]}:${uid}`;
           const previous = members.get(key);
           members.set(key, { cardName: info.cardName, memberSpecialTitle: info.memberSpecialTitle });

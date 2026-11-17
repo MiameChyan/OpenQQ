@@ -142,6 +142,7 @@ export function createEventConverter() {
       };
       if (message.chatType === 2) {
         event.sender.card = String(message.sendMemberName ?? '');
+        event.sender.role = ['owner', 'admin', 'member'].includes(message.senderRole) ? message.senderRole : 'member';
         event.anonymous = null;
       }
       const kept = slimForStorage(segments);
