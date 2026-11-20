@@ -428,7 +428,10 @@ export function createMediaPreparer({ dir, allowPrivate = process.env.OPENQQ_MED
           const { openqq_media: ignored, ...data } = segment.data;
           if (!mediaTypes.has(segment.type)) { message.push({ ...segment, data }); continue; }
           if (++count > 20) throw fail('一条消息最多包含 20 个媒体段');
-          message.push({ ...segment, data: { ...data, openqq_media: await builders[segment.type](data, track) } });
+          const media = await builders[segment.type](data, track);
+          // The source (often a multi-MB base64:// string) is now a local file; drop it so the IPC frame stays under 1 MiB.
+          const { file: _file, url: _url, ...rest } = data;
+          message.push({ ...segment, data: { ...rest, openqq_media: media } });
         }
         return { params: { ...params, message }, release };
       } catch (error) { await release(); throw error; }

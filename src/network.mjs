@@ -16,6 +16,9 @@ export async function startOneBot({ config, dispatch, onStatus = () => {} }) {
   const reverse = config.reverseWs.filter(item => item.enabled).map(item => ({ ...item, state: 'waiting', socket: null, timer: null }));
   const authFailures = new Map();
   let state = { phase: 'starting' };
+  // 一帧要装得下内嵌 base64 的媒体（图片上限 30 MiB → base64 约 40 MiB）。
+  // 原来的 256 KiB 会让带大于约 190 KB 图片的 send_msg 直接断开连接，调用方只能等到超时。
+  const maxPayload = 64 * 1024 * 1024;
   let closed = false;
   let server;
   let wss;
@@ -63,7 +66,7 @@ export async function startOneBot({ config, dispatch, onStatus = () => {} }) {
     if (closed || !ready() || item.socket || item.timer) return;
     item.state = 'connecting'; report();
     const socket = new WebSocket(item.url, { headers: { 'X-Self-ID': String(state.self_id), 'X-Client-Role': 'Universal',
-      ...(item.token ? { Authorization: 'Bearer ' + item.token } : {}) }, maxPayload: 256 * 1024, handshakeTimeout: 10000, followRedirects: false });
+      ...(item.token ? { Authorization: 'Bearer ' + item.token } : {}) }, maxPayload, handshakeTimeout: 10000, followRedirects: false });
     item.socket = socket;
     socket.on('error', () => {});
     socket.once('open', () => { item.state = 'connected'; attach(socket, 'universal', true); });
@@ -78,7 +81,7 @@ export async function startOneBot({ config, dispatch, onStatus = () => {} }) {
     server = createServer((req, res) => { res.writeHead(426); res.end('OneBot v11: WebSocket required'); });
     server.headersTimeout = 10000;
     server.requestTimeout = 30000;
-    wss = new WebSocketServer({ noServer: true, maxPayload: 256 * 1024, perMessageDeflate: false });
+    wss = new WebSocketServer({ noServer: true, maxPayload, perMessageDeflate: false });
     server.on('upgrade', (request, socket, head) => {
       socket.on('error', () => {});
       if (!request.url || !request.url.startsWith('/') || request.url.startsWith('//')) { socket.destroy(); return; }
